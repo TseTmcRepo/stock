@@ -1,14 +1,13 @@
 from google.oauth2 import service_account
-from googleapiclient.discovery import build
 from google.auth.transport.requests import AuthorizedSession
 import gspread
+from gspread.models import Cell
 
 
 scopes = ["https://www.googleapis.com/auth/spreadsheets"]
 credentials = service_account.Credentials.from_service_account_file("client_secret.json", scopes=scopes)
 client = gspread.Client(auth=credentials)
 client.session = AuthorizedSession(credentials)
-# service = build("sheets", version="v4", credentials=credentials)
 
 
 class WatchListSheetAPI:
@@ -17,14 +16,20 @@ class WatchListSheetAPI:
 
     def get_list_of_current_instrument(self):
         """
-        return list of instruments currently present in the sheet
+        return a dictionary of instruments currently present in the sheet, and their values (in string format)
         :return:
         """
 
         try:
-            return self.spreadsheet.sheet1.col_values(1)
-        except Exception:
-            return []
+            return {
+                "instruments": list(map(str.strip, self.spreadsheet.sheet1.col_values(1))),
+                "values": list(map(str.strip, self.spreadsheet.sheet1.col_values(2)))
+            }
+        except Exception as e:
+            return {
+                "instruments": [],
+                "values": []
+            }
 
     def update_instruments_price(self, instrument_value_dict):
         """
@@ -32,8 +37,47 @@ class WatchListSheetAPI:
         :param dict instrument_value_dict:
         :return:
         """
+        value_cell_list = []
+        status_cell_list = []
+        ins_list = self.get_list_of_current_instrument().get("instruments", [])
+        value_list = self.get_list_of_current_instrument().get("values", [])
+        for i, ins in enumerate(ins_list):
+            # skip header
+            if i == 0:
+                continue
+
+            ins_row = i + 1
+            val = instrument_value_dict.get(ins)
+            if type(val) is int:    # Skip stopped instruments
+                val = val / 10  # Convert ot Toman
+                status_cell_list.append(Cell(ins_row, 9, "مجاز"))
+            else:
+                val = value_list[i]
+                status_cell_list.append(Cell(ins_row, 9, "متوقف"))
+
+            value_cell_list.append(Cell(ins_row, 2, val))
+
+        if value_cell_list:
+            self.spreadsheet.sheet1.update_cells(value_cell_list)
+        if status_cell_list:
+            self.spreadsheet.sheet1.update_cells(status_cell_list)
+
+    def simulate_update_instruments_price(self, instrument_value_dict):
+        """
+        update the last value of a list of instruments
+        :param dict instrument_value_dict:
+        :return:
+        """
+        cell_list = []
         ins_list = self.get_list_of_current_instrument()
-        for ins, val in instrument_value_dict:
-            if ins in ins_list:
-                ins_index = ins_list.index(ins)
-                self.spreadsheet.sheet1.update_cell(ins_index, 2, val)
+        for i, ins in enumerate(ins_list):
+            # skip header
+            if i == 0:
+                continue
+
+            ins_row = i + 1
+            val = instrument_value_dict.get(ins, 0) / 10    # Convert to Toman
+            print(ins_row, ":", ins, val)
+            cell_list.append(Cell(ins_row, 2, val))
+
+        return cell_list

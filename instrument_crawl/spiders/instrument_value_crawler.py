@@ -1,7 +1,7 @@
 import scrapy
-from scrapy.signals import engine_stopped
+from scrapy.crawler import CrawlerProcess
+from scrapy.utils.project import get_project_settings
 import persian
-import json
 
 
 class InstrumentSpider(scrapy.Spider):
@@ -27,3 +27,9 @@ class InstrumentSpider(scrapy.Spider):
                 persian.convert_ar_characters(row.css("td")[0].css("a::text").extract_first()).strip():
                 int(str(row.css("td::text")[1].extract()).strip().replace(",", "").replace("،", ""))
             }
+
+
+if __name__ == "__main__":
+    process = CrawlerProcess(get_project_settings())
+    process.crawl(InstrumentSpider)
+    process.start()

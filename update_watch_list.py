@@ -1,5 +1,6 @@
 import json
 from google_sheet_api import WatchListSheetAPI
+from paths import instrument_json_file
 
 spreadsheet_id = "1e_nVGTGZc4Dd5_yhdVUdkyRj0JP_Br3S_rVwang6XYU"
 api = WatchListSheetAPI(spreadsheet_id=spreadsheet_id)
@@ -9,7 +10,7 @@ def get_instruments_data():
     """Get instruments data from json file
     """
     try:
-        with open("ins_val.json") as f:
+        with open(instrument_json_file) as f:
             data = json.load(f)
     except Exception:
         data = dict()
