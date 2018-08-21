@@ -4,12 +4,12 @@ from scrapy.utils.project import get_project_settings
 import persian
 
 
-class InstrumentSpider(scrapy.Spider):
-    name = "instrument_spider"
+class SymbolSpider(scrapy.Spider):
+    name = "symbol_spider"
 
     def __init__(self, *args, **kwargs):
-        self.ins_val_dict = dict()
-        super(InstrumentSpider, self).__init__()
+        self.symbol_val_dict = dict()
+        super(SymbolSpider, self).__init__()
 
     start_urls = [
         "http://www.fipiran.com/Market/LupBourse",
@@ -31,5 +31,5 @@ class InstrumentSpider(scrapy.Spider):
 
 if __name__ == "__main__":
     process = CrawlerProcess(get_project_settings())
-    process.crawl(InstrumentSpider)
+    process.crawl(SymbolSpider)
     process.start()

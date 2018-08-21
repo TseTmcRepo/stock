@@ -6,10 +6,10 @@
 # See: https://doc.scrapy.org/en/latest/topics/item-pipeline.html
 import json
 import os
-from paths import instrument_json_file
+from src.paths import INSTRUMENT_JSON_FILE
 
 
-class InstrumentCrawlPipeline(object):
+class SymbolCrawlPipeline(object):
     def process_item(self, item, spider):
         return item
 
@@ -17,7 +17,7 @@ class InstrumentCrawlPipeline(object):
 class JsonPipeline(object):
     def __init__(self):
         self.items = dict()
-        self.filename = instrument_json_file
+        self.filename = INSTRUMENT_JSON_FILE
         if os.path.exists(self.filename):
             os.remove(self.filename)
 

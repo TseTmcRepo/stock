@@ -8,7 +8,7 @@
 import scrapy
 
 
-class InstrumentCrawlItem(scrapy.Item):
+class SymbolCrawlItem(scrapy.Item):
     # define the fields for your item here like:
     # name = scrapy.Field()
     pass
