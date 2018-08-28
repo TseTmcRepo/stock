@@ -11,6 +11,67 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(filename)s:%(lin
 logger = logging.getLogger(__name__)
 
 
+class ADXAnalyzer:
+    """class to perform ADX analysis on historical data"""
+
+    def __init__(self):
+        self.dbmanager = MongodbManager()
+
+    def read_data(self, symbol, days):
+        data = self.dbmanager.get_last_n_historical_data(symbol=symbol, days=days)
+        data.reverse()  # to sort from earliest to latest
+        return pd.DataFrame({
+            "close": [item.get("close") for item in data],
+            "low": [item.get("low") for item in data],
+            "high": [item.get("high") for item in data],
+            "datetime": [item.get("datetime") for item in data]
+        })
+
+    def calculate_adx(self, symbol, days, n, n_ADX):
+        """Calculate the Average Directional Movement Index for given data.
+
+            :param df: pandas.DataFrame
+            :param n:
+            :param n_ADX:
+            :return: pandas.DataFrame
+            """
+
+        df = self.read_data(symbol, days)
+        i = 0
+        UpI = []
+        DoI = []
+        while i + 1 <= df.index[-1]:
+            UpMove = df.loc[i + 1, 'high'] - df.loc[i, 'high']
+            DoMove = df.loc[i, 'low'] - df.loc[i + 1, 'low']
+            if UpMove > DoMove and UpMove > 0:
+                UpD = UpMove
+            else:
+                UpD = 0
+            UpI.append(UpD)
+            if DoMove > UpMove and DoMove > 0:
+                DoD = DoMove
+            else:
+                DoD = 0
+            DoI.append(DoD)
+            i = i + 1
+        i = 0
+        TR_l = [0]
+        while i < df.index[-1]:
+            TR = max(df.loc[i + 1, 'high'], df.loc[i, 'close']) - min(df.loc[i + 1, 'low'], df.loc[i, 'close'])
+            TR_l.append(TR)
+            i = i + 1
+        TR_s = pd.Series(TR_l)
+        ATR = pd.Series(TR_s.ewm(span=n, min_periods=n).mean())
+        UpI = pd.Series(UpI)
+        DoI = pd.Series(DoI)
+        PosDI = pd.Series(UpI.ewm(span=n, min_periods=n).mean() / ATR)
+        NegDI = pd.Series(DoI.ewm(span=n, min_periods=n).mean() / ATR)
+        ADX = pd.Series((abs(PosDI - NegDI) / (PosDI + NegDI)).ewm(span=n_ADX, min_periods=n_ADX).mean(),
+                        name='ADX_' + str(n) + '_' + str(n_ADX))
+        df = df.join(ADX)
+        return df
+
+
 class MACDAnalyzer:
     """class to perform MACD analysis on historical data"""
 
@@ -91,7 +152,7 @@ class MACDAnalyzer:
 
         if abs((slope_10 - slope_21) / slope_21) <= neutral_tol:
             signal = "NEUTRAL"
-        elif abs(slope_10/slope_21) <= forecast_tol:
+        elif abs(slope_10 / slope_21) <= forecast_tol:
             signal = "BUY" if slope_21 < 0 else "SELL"
         elif slope_21 > 0 > slope_10:
             signal = "SELL"
@@ -101,8 +162,8 @@ class MACDAnalyzer:
             signal = "NEUTRAL"
 
         print(sf)
-        print(signal, slope_21, slope_10, slope_10/slope_21, (slope_10 - slope_21)/slope_21)
-        print("="*10)
+        print(signal, slope_21, slope_10, slope_10 / slope_21, (slope_10 - slope_21) / slope_21)
+        print("=" * 10)
         return signal
 
     def run_backtest_with_extremum(self, symbol, days=1, initial_capital=10000):
@@ -115,18 +176,18 @@ class MACDAnalyzer:
             try:
                 if index < self.slow_range:
                     continue
-                slice = df[index-3:index]
+                slice = df[index - 3:index]
                 signal = self.signal_on_extremum(df=slice)
                 if signal == "BUY":
-                    portfo = capital // df["first"].iat[index+1]
-                    capital -= portfo * df["first"].iat[index+1]
+                    portfo = capital // df["first"].iat[index + 1]
+                    capital -= portfo * df["first"].iat[index + 1]
                 elif signal == "SELL":
-                    capital += portfo * df["first"].iat[index+1]
+                    capital += portfo * df["first"].iat[index + 1]
             except Exception as e:
                 continue
 
         capital = capital + portfo * df["close"].iat[-1]
-        return capital, capital/initial_capital, df["close"].iat[-1]/df["close"].iat[self.slow_range]
+        return capital, capital / initial_capital, df["close"].iat[-1] / df["close"].iat[self.slow_range]
 
 
 class PivotPointAnalayzer:
@@ -170,13 +231,13 @@ class PivotPointAnalayzer:
 
             print(high, low, close)
 
-            pp = 0.25 * (high + low + 2*close)
-            r1 = 2*pp - low
+            pp = 0.25 * (high + low + 2 * close)
+            r1 = 2 * pp - low
             r2 = pp + high - low
-            r3 = high + 2*(pp - low)
-            s1 = 2*pp - high
+            r3 = high + 2 * (pp - low)
+            s1 = 2 * pp - high
             s2 = pp + low - high
-            s3 = low - 2*(high - pp)
+            s3 = low - 2 * (high - pp)
 
             return pp, r1, r2, r3, s1, s2, s3
         except Exception as e:
