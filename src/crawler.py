@@ -1,5 +1,6 @@
 import csv
 import time
+import pytz
 import random
 import logging
 import datetime
@@ -10,10 +11,9 @@ import asyncio
 import uvloop
 import janus
 from io import StringIO
-from bs4 import BeautifulSoup
-from src.settings import PERSIAN_ALPHABET
 from resources.data_resources import DataResource
 from src.db_manager import MongodbManager, AsyncMongodbManager
+from src.settings import PERSIAN_ALPHABET, DataStrings, TIMEZONE
 
 # create logger
 logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(filename)s:%(lineno)s - %(message)s")
@@ -24,7 +24,7 @@ def clean_symbol_name_code(symbol):
     return {
         "symbol": persian.convert_ar_characters(symbol.get("LVal18AFC", "").strip()),
         "symbol_raw": symbol.get("LVal18AFC", "").strip(),
-        "code": symbol.get("InstrumentID").strip()
+        "ISIN": symbol.get("InstrumentID").strip()
     }
 
 
@@ -43,6 +43,19 @@ class CrawlSymbols:
         :return:
         """
         self.async_dbmanager = AsyncMongodbManager(event_loop=event_loop)
+
+    def _is_market_open(self):
+        """
+        Return True if stock market is open now, otherwise False.
+        :return:
+        """
+        now = datetime.datetime.now(tz=TIMEZONE)
+        if now.weekday in [3, 4]:   # Thursday and Friday
+            return False
+        if datetime.time(8, 30, tzinfo=TIMEZONE) <= now.time() <= datetime.time(12, 30, tzinfo=TIMEZONE):
+            return True
+        else:
+            return False
 
     async def _fetch_url(self, session, url, data=None, params=None, method="POST"):
         """
@@ -78,7 +91,7 @@ class CrawlSymbols:
             logger.error("Cannot retrieve list of available symbols. status code: {0}".format(r.status_code))
             return []
 
-    def _extrac_titles_and_tsetmc_codes(self, response):
+    def _extract_titles_and_tsetmc_codes(self, response):
         """
         extract title and tsetmc unique code from response returned from tsetmc.com
 
@@ -116,7 +129,7 @@ class CrawlSymbols:
         prefix = prefix_info.get("prefix")
         try:
             response = await self._fetch_url(session, url, params={"skey": prefix}, method="GET")
-            extracted_info = self._extrac_titles_and_tsetmc_codes(response)
+            extracted_info = self._extract_titles_and_tsetmc_codes(response)
             logger.info("gather titles and tsetmc codes for prefix: {}".format(prefix))
             for info in extracted_info:
                 if info.get("tsetmc_code") and info.get("symbol") not in self.symbol_crawled_set:
@@ -129,7 +142,7 @@ class CrawlSymbols:
                 prefix_info["num_tries"] += 1
                 await self.symbol_queue_to_crawl.put(prefix_info)
             else:
-                logger.error("request try exceeded limit for symbol: {}".format(symbol))
+                logger.error("request try exceeded limit for prefix: {}".format(prefix))
 
     async def _crawl_title_and_tsetmc_code(self, **kwargs):
         """
@@ -147,47 +160,38 @@ class CrawlSymbols:
                     tasks.append(asyncio.ensure_future(self._gather_title_and_tsetmc_code(session, url)))
 
                 await asyncio.gather(*tasks)
-                # sleep to prevent our IP from being blocked. sleep more whe remaining symbols is fewer than 2*workers
-                time.sleep(max(2 * workers - self.symbol_queue_to_crawl.qsize(), 1))
+                # sleep to prevent our IP from being blocked. sleep more whe remaining symbols is fewer than 20
+                time.sleep(max(20 - self.symbol_queue_to_crawl.qsize(), 1))
 
-    def _get_start_and_end_strings(self, days):
+    def _extract_trade_info_csv(self, csv_row, symbol_info):
         """
-        Return date strings form start and end of a last #days period
-        :param int days:
-        :return:
-        """
-        now = datetime.datetime.now()
-        end_date = now.strftime("%Y%m%d")
-        start_date = (now - datetime.timedelta(days=days)).strftime("%Y%m%d")
-        return start_date, end_date
-
-    def _extract_daily_trade_info(self, csv_row, symbol_info):
-        """
-        Extract trade information of a day, given a row of data. this is based on fipiran.com data format
+        Extract trade information of a day, given a row of data. this is based on tsetmc.com data format
         :param dict csv_row:
         :param dict symbol_info:
         :return:
         :rtype: dict
         """
+        date_time = datetime.datetime.strptime(csv_row["<DTYYYYMMDD>"].strip(), "%Y%m%d")
+        date_time = date_time.replace(hour=12, minute=30, tzinfo=TIMEZONE)
         return {
-            "symbol": symbol_info.get("symbol"),
-            "datetime": datetime.datetime.strptime(csv_row["<DTYYYYMMDD>"].strip(), "%Y%m%d"),
-            "close": int(float(csv_row["<LAST>"])),
-            "average": int(float(csv_row["<CLOSE>"])),
-            "low": int(float(csv_row["<LOW>"])),
-            "high": int(float(csv_row["<HIGH>"])),
-            "first": int(float(csv_row["<FIRST>"])),
-            "last_day": int(float(csv_row["<OPEN>"])),
-            "num_trade": int(csv_row["<OPENINT>"]),
-            "vol": int(csv_row["<VOL>"]),
-            "value": int(csv_row["<VALUE>"]),
+            DataStrings.SYMBOL: symbol_info.get("symbol"),
+            DataStrings.DATETIME: date_time,
+            DataStrings.PRICELAST: int(float(csv_row["<LAST>"])),
+            DataStrings.PRICECLOSING: int(float(csv_row["<CLOSE>"])),
+            DataStrings.PRICELOW: int(float(csv_row["<LOW>"])),
+            DataStrings.PRICEHIGH: int(float(csv_row["<HIGH>"])),
+            DataStrings.PRICEFIRST: int(float(csv_row["<FIRST>"])),
+            DataStrings.PRICELASTDAY: int(float(csv_row["<OPEN>"])),
+            DataStrings.TRANSNUMBER: int(csv_row["<OPENINT>"]),
+            DataStrings.TRANSVOLUME: int(csv_row["<VOL>"]),
+            DataStrings.TRANSVALUE: int(csv_row["<VALUE>"]),
         }
 
-    def _parse_historical_data_table(self, csv_text, symbol_info):
+    def _parse_historical_data(self, csv_text, symbol_info):
         """
         Get a CSV table and return a list of dictionaries, each containing a row of daily data
         :param str csv_text:
-        :param dict symbol_info
+        :param dict symbol_info:
         :return:
         :rtype: list of dict
         """
@@ -195,16 +199,14 @@ class CrawlSymbols:
         file = StringIO(csv_text)
         csv_reader = csv.DictReader(file, delimiter=",")
         for row in csv_reader:
-            extracted_data_list.append(self._extract_daily_trade_info(row, symbol_info))
+            extracted_data_list.append(self._extract_trade_info_csv(row, symbol_info))
 
         return extracted_data_list
 
-    def _prepare_historical_request_params(self, symbol_info, start_date, end_date):
+    def _prepare_tsetmc_request_params(self, symbol_info):
         """
         Prepare params of a GET request to get historical data
         :param dict symbol_info:
-        :param str start_date: start date
-        :param str end_date: end date
         :return:
         :rtype: dict
         """
@@ -215,23 +217,13 @@ class CrawlSymbols:
             "b": "0"
         }
 
-        # return {
-        #     "a": "InsTrade",
-        #     "InsCode": symbol_info.get("tsetmc_code"),
-        #     "DateFrom": start_date,
-        #     "DateTo": end_date,
-        #     "b": "0"
-        # }
-
-    async def _gather_historical_data(self, session, url, start_date, end_date):
+    async def _gather_historical_data(self, session, url):
         """
-        Send post request to the given url, fetch response and extract daily symbol data between start_date
-        and end_date, finally stores the extracted data
+        Send post request to the given url, fetch response and extract daily symbol trade data for all its history,
+        finally stores the extracted data
 
         :param aiohttp.ClientSession session:
         :param str url:
-        :param str start_date:
-        :param str end_date:
         :return:
         """
         if self.symbol_queue_to_crawl.qsize() > 0:
@@ -245,11 +237,10 @@ class CrawlSymbols:
             return
 
         # create request data to sent to the tsetmc server
-        # TODO: Currently tsetmc.com only return all history of a symbol. start_date and end_date does not work
-        request_params = self._prepare_historical_request_params(symbol_info, start_date, end_date)
+        request_params = self._prepare_tsetmc_request_params(symbol_info)
         try:
             csv_table = await self._fetch_url(session=session, url=url, params=request_params, method="GET")
-            extracted_data_list = self._parse_historical_data_table(csv_table, symbol_info)
+            extracted_data_list = self._parse_historical_data(csv_table, symbol_info)
             logger.info("{0} rows extracted for {1}".format(len(extracted_data_list), symbol_info.get("symbol")))
             if bool(extracted_data_list):
                 await self.async_dbmanager.add_historical_data(extracted_data_list)
@@ -263,33 +254,76 @@ class CrawlSymbols:
 
     async def _crawl_symbol_historical_data(self, **kwargs):
         """
-        Schedule and execute getting historical data of last #days timespan for symbols present
-        in self.symbol_code_queue
-
-        :param int days:
-        :return
+        Schedule and execute getting all historical data of a symbols present
+        in self.symbol_queue_to_crawl
         """
         resource = DataResource.TSETMC_HISTORY
         headers = resource.get("headers")
         url = resource.get("url")
-        days = kwargs.get("days", 1)
         workers = 10  # number of concurrent requests to the server before sleep
-        start_date, end_date = self._get_start_and_end_strings(days=days)
 
-        logger.info("crawl historical data from {0} to {1} for {2} symbols with {3} workers".format(
-            start_date, end_date, self.symbol_queue_to_crawl.qsize(), workers))
+        logger.info("crawl historical data for {0} symbols with {1} workers".format(
+            self.symbol_queue_to_crawl.qsize(), workers))
 
         async with aiohttp.ClientSession(headers=headers, read_timeout=30) as session:
             while self.symbol_queue_to_crawl.qsize() > 0:
                 tasks = []
                 for _ in range(workers):
                     tasks.append(
-                        asyncio.ensure_future(self._gather_historical_data(session, url, start_date, end_date)))
+                        asyncio.ensure_future(self._gather_historical_data(session, url)))
 
                 await asyncio.gather(*tasks)
 
                 # sleep to prevent our IP from being blocked
                 time.sleep(random.randint(1, 2))
+
+    def _extract_trade_info_tgju_list(self, info_list):
+        """
+        Extract trade info for the symbols given in info_list
+        :param list info_list:
+        :return:
+        """
+        extracted_data = []
+        # TODO: The line bellow can be tricky when we repalce original time with market close time
+        now = datetime.datetime.now(tz=TIMEZONE).replace(hour=12, minute=30, second=0, microsecond=0)
+        for data in info_list:
+            try:
+                extracted_data.append({
+                    DataStrings.SYMBOL: persian.convert_ar_characters(data.get("LVal18AFC")),
+                    DataStrings.DATETIME: now,
+                    DataStrings.PRICELAST: int(data.get("PDrCotVal")),
+                    DataStrings.PRICECLOSING: int(data.get("PClosing")),
+                    DataStrings.PRICELOW: int(data.get("PriceMin")),
+                    DataStrings.PRICEHIGH: int(data.get("PriceMax")),
+                    DataStrings.PRICEFIRST: int(data.get("PriceFirst")),
+                    DataStrings.PRICELASTDAY: int(data.get("PriceYesterday")),
+                    DataStrings.TRANSNUMBER: int(data.get("ZTotTran")),
+                    DataStrings.TRANSVOLUME: int(data.get("QTotTran5J")),
+                    DataStrings.TRANSVALUE: int(data.get("QTotCap")),
+                })
+            except Exception as e:
+                logger.error("error extracting info for {0}: {1}".format(data.get("LVal18AFC"), str(e)))
+
+        return extracted_data
+
+    def _crawl_symbols_recent_data(self):
+        """
+        Get up-to-date data for currently trading symbols from tgju.org
+        :return:
+        """
+        resource = DataResource.TGJU_SCREENER
+        r = requests.get(resource.get("url"), params=resource.get("params"), headers=resource.get("headers"))
+        if r.status_code == 200:
+            response = r.json()
+            logger.info("got update for {} symbols.".format(response.get("totalrecords")))
+            extracted_data = self._extract_trade_info_tgju_list(response.get("rows", []))
+            self.dbmanager.add_historical_data(extracted_data)
+            if len(extracted_data) > 0:
+                dt_exp = extracted_data[0].get(DataStrings.DATETIME).strftime("%Y%m%d-%H%M")
+                symbol_list = [data.get(DataStrings.SYMBOL) for data in extracted_data]
+                self.dbmanager.upsert_list_of_update_symbols(dt_exp=dt_exp, update_symbols=symbol_list)
+        else:
+            logger.error("cannot retrieve up-to-date data from tjgu.org. status code: {}".format(r.status_code))
 
     def _fill_symbol_queue_to_crawl(self, list_of_items):
         """
@@ -312,7 +346,7 @@ class CrawlSymbols:
             self.dbmanager.upsert_symbol_info(info)
 
     def _generate_prefixes(self):
-        """Generate a list 2-letter length prefix from persian alphabet"""
+        """Generate a list of 2-letter length prefix from persian alphabet"""
         prefixes = []
         for i in PERSIAN_ALPHABET:
             for j in PERSIAN_ALPHABET:
@@ -339,24 +373,34 @@ class CrawlSymbols:
         self._fill_symbol_queue_to_crawl(list_of_items=[{"prefix": x} for x in self._generate_prefixes()])
         self._run_a_crawl_job(self._crawl_title_and_tsetmc_code)
         self._fill_symbol_queue_to_crawl(list_of_items=self.dbmanager.get_symbols())
-        self._run_a_crawl_job(self._crawl_symbol_historical_data, **{"days": 3650})
+        self._run_a_crawl_job(self._crawl_symbol_historical_data)
         self.dbmanager.remove_duplicates_in_historical_data()
         self.dbmanager.add_configuration({"name": "crawler_is_initiated", "value": True})
 
     def update_data(self):
         """Update the data in the db"""
-        list_of_symbol_and_code = self._crawl_symbol_and_code()
-
-        self._add_or_update_symbols(list_of_symbol_info=list_of_symbol_and_code)
-        self._fill_symbol_queue_to_crawl(list_of_items=list_of_symbol_and_code)
-        self._run_a_crawl_job(self._crawl_symbol_historical_data, **{"days": 0})
+        self._crawl_symbols_recent_data()
         self.dbmanager.remove_duplicates_in_historical_data()
 
     def run(self):
         """Run the crawler"""
-        crawler_is_initiated = self.dbmanager.get_configuration("crawler_is_initiated")
+        update_interval = 600   # seconds
+        checking_interval = 10  # seconds
 
-        if crawler_is_initiated:
-            self.update_data()
-        else:
+        crawler_is_initiated = self.dbmanager.get_configuration("crawler_is_initiated")
+        if not crawler_is_initiated:
+            logger.info("initial run ...")
             self.initial_run()
+        while True:
+            if self._is_market_open():
+                logger.info("updating the data ...")
+                self.update_data()
+                time.sleep(update_interval-checking_interval)
+            else:
+                logger.info("market is closed")
+                time.sleep(checking_interval)
+
+
+if __name__ == "__main__":
+    crawler = CrawlSymbols()
+    crawler.run()

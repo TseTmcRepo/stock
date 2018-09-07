@@ -1,3 +1,7 @@
+import pytz
+
+TIMEZONE = pytz.timezone("Asia/Tehran")
+
 # MongoDB settings and constants
 mongodb_settings = {
     "host": "localhost",
@@ -5,21 +9,32 @@ mongodb_settings = {
     "name": "stock"
 }
 
-CONFIGS_COLLECTION_NAME = "config_collection"
-SYMBOL_INFO_COLLECTION_NAME = "symbol_code_collection"
-HISTORICAL_DATA_COLLECTION_NAME = "historical_data_collection"
+CONFIGS_COLLECTION = "configs"
+SYMBOL_INFO_COLLECTION = "symbol_info"
+HISTORICAL_DATA_COLLECTION = "historical_data"
+UPDATED_SYMBOLS_COLLECTION = "updated_symbols"
 
-# MACD Settings
-macd_settings = {
-    "slow_range": 26,
-    "fast_range": 12,
-    "signal_range": 9
-}
 
-# Pivot Point settings
-pp_settings = {
-    "mid_range": 30,
-    "long_range": 90
+class DataStrings:
+    SYMBOL = "symbol"
+    DATETIME = "datetime"
+    PRICELAST = "Last"
+    PRICEFIRST = "First"
+    PRICEHIGH = "High"
+    PRICELOW = "Low"
+    PRICECLOSING = "Close"
+    PRICELASTDAY = "Previous"
+    TRANSNUMBER = "TransNum"
+    TRANSVOLUME = "TransVol"
+    TRANSVALUE = "TransVal"
+
+
+# Commissions
+COMMISSIONS = {
+    "buy_bours": 0.00486,
+    "sell_bours": 0.01029,
+    "buy_fara_bours": 0.00474,
+    "sell_fara_bours": 0.01011,
 }
 
 # Persian alphabet
