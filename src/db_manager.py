@@ -1,7 +1,8 @@
+import logging
 import motor.motor_asyncio as amotor
+import jdatetime
 import pymongo
 from bson.codec_options import CodecOptions
-import logging
 from src.settings import mongodb_settings, SYMBOL_INFO_COLLECTION, HISTORICAL_DATA_COLLECTION, \
     CONFIGS_COLLECTION, UPDATED_SYMBOLS_COLLECTION, TIMEZONE
 
@@ -46,6 +47,18 @@ class MongodbManager:
         match_pipe = {"$match": {"count": {"$gt": 1}}}
         return [item.get("duplicates") for item in
                 self.db[collection].aggregate([duplicate_pipe, match_pipe], allowDiskUse=True)]
+
+    def _modify_historical_data(self, data):
+        """
+        Modify the data
+        :param dict data:
+        :return:
+        """
+        # remove _id
+        del data["_id"]
+
+        # add Jalali date
+        data.update({"jdatetime": jdatetime.datetime.fromgregorian(datetime=data.get("datetime"))})
 
     def add_configuration(self, config):
         """
@@ -124,7 +137,8 @@ class MongodbManager:
         :param list update_symbols:
         :return:
         """
-        r = self.db[UPDATED_SYMBOLS_COLLECTION].update_one({"datetime": dt_exp}, {"$set": update_symbols}, upsert=True)
+        document = {"datetime": dt_exp, "updated_symbols": update_symbols}
+        r = self.db[UPDATED_SYMBOLS_COLLECTION].update_one({"datetime": dt_exp}, {"$set": document}, upsert=True)
         logger.info("{0} list of updated symbols for {1}".format("added" if bool(r.upserted_id) else "updated", dt_exp))
 
     def add_historical_data(self, list_of_data):
@@ -155,6 +169,17 @@ class MongodbManager:
         except Exception as e:
             logger.error(str(e))
 
+    def upsert_historical_data(self, data):
+        """
+        Upsert historical data
+
+        :param dict data:
+        :return:
+        """
+        data_filter = {"symbol": data.get("symbol"), "datetime": data.get("datetime")}
+        r = self.db[HISTORICAL_DATA_COLLECTION].update_one(filter=data_filter, update={"$set": data}, upsert=True)
+        logger.info("{0} data for {1}".format("added" if bool(r.upserted_id) else "updated", data.get("symbol")))
+
     def get_last_n_historical_data(self, symbol, days=1):
         """
         Returns the data related to a symbol for the last number of `n` days (if available)
@@ -164,9 +189,28 @@ class MongodbManager:
         :return: list of dict
         """
 
-        logger.info("Getting last {0} data for {1}".format(days, symbol))
         collection = self.db[HISTORICAL_DATA_COLLECTION].with_options(CodecOptions(tz_aware=True, tzinfo=TIMEZONE))
-        return list(collection.find({"symbol": symbol}).sort("datetime", -1).limit(days))
+        res = list(collection.find({"symbol": symbol}).sort("datetime", -1).limit(days))
+        res.reverse()
+        for data in res:
+            self._modify_historical_data(data)
+        logger.info("Getting last {0} data for {1}. (available: {2})".format(days, symbol, len(res)))
+        return res
+
+    def get_recent_historical_data(self, symbol, start_date):
+        """
+        Returns data for a symbol traded after start_date (exclusive)
+
+        :param str symbol:
+        :param start_date:
+        :return:
+        """
+        collection = self.db[HISTORICAL_DATA_COLLECTION].with_options(CodecOptions(tz_aware=True, tzinfo=TIMEZONE))
+        res = list(collection.find({"symbol": symbol, "datetime": {"$gt": start_date}}).sort("datetime", 1))
+        for data in res:
+            self._modify_historical_data(data)
+        logger.info("{0} data returned for {1}, traded after {2}".format(len(res), symbol, start_date))
+        return res
 
     def remove_duplicates_in_historical_data(self):
         """
@@ -245,6 +289,18 @@ class AsyncMongodbManager:
                                                                          SYMBOL_INFO_COLLECTION))
         except Exception as e:
             logger.error("ASYNC | " + str(e))
+
+    async def upsert_historical_data(self, data):
+        """
+        Upsert historical data
+
+        :param dict data:
+        :return:
+        """
+        collection = amotor.AsyncIOMotorCollection(self.db, HISTORICAL_DATA_COLLECTION)
+        data_filter = {"symbol": data.get("symbol"), "datetime": data.get("datetime")}
+        r = await collection.update_one(filter=data_filter, update={"$set": data}, upsert=True)
+        logger.info("ASYNC | {0} data for {1}".format("added" if bool(r.upserted_id) else "updated", data.get("symbol")))
 
     async def get_last_n_historical_data(self, symbol, days=1):
         """

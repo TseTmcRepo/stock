@@ -306,7 +306,7 @@ class CrawlSymbols:
 
         return extracted_data
 
-    def _crawl_symbols_recent_data(self):
+    async def _crawl_symbols_recent_data(self):
         """
         Get up-to-date data for currently trading symbols from tgju.org
         :return:
@@ -317,7 +317,8 @@ class CrawlSymbols:
             response = r.json()
             logger.info("got update for {} symbols.".format(response.get("totalrecords")))
             extracted_data = self._extract_trade_info_tgju_list(response.get("rows", []))
-            self.dbmanager.add_historical_data(extracted_data)
+            for data in extracted_data:
+                await self.async_dbmanager.upsert_historical_data(data)
             if len(extracted_data) > 0:
                 dt_exp = extracted_data[0].get(DataStrings.DATETIME).strftime("%Y%m%d-%H%M")
                 symbol_list = [data.get(DataStrings.SYMBOL) for data in extracted_data]
@@ -379,8 +380,7 @@ class CrawlSymbols:
 
     def update_data(self):
         """Update the data in the db"""
-        self._crawl_symbols_recent_data()
-        self.dbmanager.remove_duplicates_in_historical_data()
+        self._run_a_crawl_job(self._crawl_symbols_recent_data)
 
     def run(self):
         """Run the crawler"""
